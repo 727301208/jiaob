@@ -17,7 +17,7 @@ rm -rf all
 rm -rf $0
 #
 #密钥监测
-Authorized_domain=https://lse112233.pw/
+Authorized_domain=https://vpn.lse112233.ml/
 webapi_token=NimaQu
 #Authorized_domain=https://www.tuohaicloud.com
 #webapi_token=NimaQu
