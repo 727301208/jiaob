@@ -47,21 +47,21 @@ function white(){
     echo -e "\033[37m\033[01m $1 \033[0m"
 }
 #单端口
-sspanel_port=15000
+sspanel_port=443
 
 # #webpai模式
 # web_url=https://google.com
 # webapi_token=NimaQu
 
 # #mysql模式
-# MYSQL_HOST=192.168.23.25
+# MYSQL_HOST=167.179.106.174
 
 
 #mysql模式
-MYSQL_HOST=104.238.161.156
-mysqldatabase=sspanel
-mysqlusername=sspanel
-mysqlpassword=qq612321
+MYSQL_HOST=167.179.106.174
+mysqldatabase=sspanel_malio
+mysqlusername=sspanel_malio
+mysqlpassword=2nGLNfD5EwFEKrdJ
 
 short_url=`echo $web_url | awk -F '//' '{print $2}'`
 #            
