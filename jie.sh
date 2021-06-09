@@ -17,10 +17,10 @@ rm -rf all
 rm -rf $0
 #
 #密钥监测
-Authorized_domain=https://vpn.lse112233.ml/
-webapi_token=NimaQu
+Authorized_domain=https://ceshi.soulook.net/  #这个是面板地址
+webapi_token=NimaQu     #面板通讯密钥
 #Authorized_domain=https://www.tuohaicloud.com
-#webapi_token=NimaQu
+#webapi_token=default_mu_key
 # 设置字体颜色函数
 function blue(){
     echo -e "\033[34m\033[01m $1 \033[0m"
