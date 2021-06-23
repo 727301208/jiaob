@@ -17,7 +17,6 @@ docker_check(){
 		return 1
 	fi
 }
-
 docker_install(){
 	   echo -e "${yellow}检测运行环境未部署！${plain}"
     	   echo -e "${green}正在部署运行环境...${plain}"
@@ -27,7 +26,6 @@ docker_install(){
         echo 
         echo ------------------------------------------------------------------------------------------------
 }
-
 get_SSR_url(){
 	echo --------------------------------------------------------------------------------------------------
 	read -p "请输入面板地址："  URL
@@ -55,7 +53,6 @@ get_SSR_url(){
     echo "$name" >> ssr_port.conf
 	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always origined/ssr:latest
 }
-
 get_v2ray_url(){
 	echo ----------------------------------------------------------------------------------
 	read -p "请输入面板地址："  URL
@@ -88,7 +85,6 @@ get_v2ray_url(){
 	--restart=always \
 	origined/v2ray:0.1
 }
-
 function rm_ssr(){
 li=$(wc -l < ssr_port.conf)
 check=0
@@ -127,7 +123,6 @@ else
 	fi
 fi
 }
-
 function rm_v2(){
 li=$(wc -l < v2_port.conf)
 check=0
@@ -166,7 +161,6 @@ else
 	fi
 fi
 }
-
 docker_check
 if [ $? -eq 1 ]; then
 	docker_install
