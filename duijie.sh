@@ -4,20 +4,25 @@ echo
 echo                                       马花藤定制定制脚本      
 echo 
 echo --------------------------------------------------------------------------------------------------
+
+
 options=(对接SSR 对接V2ray 删除SSR端口 删除V2ray端口 退出脚本)
+
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
-docker_check(){
-sudo docker -v > /dev/null
+
+function docker_check(){
+	docker -v > /dev/null
 	if [ $? -eq  0 ]; then
 		return 0
 	else
 		return 1
 	fi
 }
-docker_install(){
+
+function docker_install(){
 	   echo -e "${yellow}检测运行环境未部署！${plain}"
     	   echo -e "${green}正在部署运行环境...${plain}"
         curl -fsSL https://get.docker.com -o get-docker.sh
@@ -26,6 +31,7 @@ docker_install(){
         echo 
         echo ------------------------------------------------------------------------------------------------
 }
+
 get_SSR_url(){
 	echo --------------------------------------------------------------------------------------------------
 	read -p "请输入面板地址："  URL
@@ -53,6 +59,7 @@ get_SSR_url(){
     echo "$name" >> ssr_port.conf
 	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always origined/ssr:latest
 }
+
 get_v2ray_url(){
 	echo ----------------------------------------------------------------------------------
 	read -p "请输入面板地址："  URL
@@ -85,6 +92,7 @@ get_v2ray_url(){
 	--restart=always \
 	origined/v2ray:0.1
 }
+
 function rm_ssr(){
 li=$(wc -l < ssr_port.conf)
 check=0
@@ -123,6 +131,7 @@ else
 	fi
 fi
 }
+
 function rm_v2(){
 li=$(wc -l < v2_port.conf)
 check=0
@@ -161,6 +170,7 @@ else
 	fi
 fi
 }
+
 docker_check
 if [ $? -eq 1 ]; then
 	docker_install
