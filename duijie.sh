@@ -9,6 +9,7 @@ red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
+
 docker_check(){
 	docker -v > /dev/null
 	if [ $? -eq  0 ]; then
