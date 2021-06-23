@@ -9,7 +9,7 @@ red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
-function docker_check(){
+docker_check(){
 	docker -v > /dev/null
 	if [ $? -eq  0 ]; then
 		return 0
@@ -18,7 +18,7 @@ function docker_check(){
 	fi
 }
 
-function docker_install(){
+docker_install(){
 	   echo -e "${yellow}检测运行环境未部署！${plain}"
     	   echo -e "${green}正在部署运行环境...${plain}"
         curl -fsSL https://get.docker.com -o get-docker.sh
