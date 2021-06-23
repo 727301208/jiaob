@@ -4,15 +4,11 @@ echo
 echo                                       马花藤定制定制脚本      
 echo 
 echo --------------------------------------------------------------------------------------------------
-
-
 options=(对接SSR 对接V2ray 删除SSR端口 删除V2ray端口 退出脚本)
-
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
-
 function docker_check(){
 	docker -v > /dev/null
 	if [ $? -eq  0 ]; then
