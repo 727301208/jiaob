@@ -47,21 +47,21 @@ function white(){
     echo -e "\033[37m\033[01m $1 \033[0m"
 }
 #单端口
-sspanel_port=15000
+sspanel_port=443
 
 # #webpai模式
-# web_url=https://google.com
-# webapi_token=NimaQu
+# web_url=https://kuailian-vpn.de
+# webapi_token=vpn
 
 # #mysql模式
-# MYSQL_HOST=192.168.23.25
+# MYSQL_HOST=140.82.6.22
 
 
 #mysql模式
-MYSQL_HOST=167.179.82.61
-mysqldatabase=sspanel
-mysqlusername=sspanel
-mysqlpassword=sspanel
+MYSQL_HOST=140.82.6.22
+mysqldatabase=kuailian_vpn_de
+mysqlusername=kuailian_vpn_de
+mysqlpassword=dE7TGhkxSGZLcz8D
 
 short_url=`echo $web_url | awk -F '//' '{print $2}'`
 #            
