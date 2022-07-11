@@ -81,7 +81,7 @@ backend_docking_set(){
         read -p "请输入节点ID:" node_id
         yellow "配置已完成，正在部署后端。。。。"
         check_docker
-        docker run -d --name=ssrmu -e NODE_ID=$node_id -e API_INTERFACE=modwebapi -e WEBAPI_URL=$web_url -e WEBAPI_TOKEN=$webapi_token --network=host --log-opt max-size=50m --log-opt max-file=3 --restart=always alick1995/sspanel:ssr
+        docker run -d --name=ssrmu -e NODE_ID=$node_id -e API_INTERFACE=modwebapi -e WEBAPI_URL=$web_url -e WEBAPI_TOKEN=$webapi_token --network=host --log-opt max-size=50m --log-opt max-file=3 --restart=always origined/ssr:latest
         greenbg "恭喜您，后端节点已搭建成功"        
 	elif [[ "${vnum}" == "2" ]]; then
         greenbg "当前对接模式：数据库对接"
@@ -94,7 +94,7 @@ backend_docking_set(){
         read -p "请输入节点ID:" node_id
         yellow "配置已完成，正在部署后端。。。。"
         check_docker
-        docker run -d --name=ssrmu -e NODE_ID=$node_id -e API_INTERFACE=glzjinmod -e MYSQL_HOST=$web_ip -e MYSQL_USER=root -e MYSQL_DB=sspanel -e MYSQL_PASS=$root_pwd --network=host --log-opt max-size=50m --log-opt max-file=3 --restart=always alick1995/sspanel:ssr
+        docker run -d --name=ssrmu -e NODE_ID=$node_id -e API_INTERFACE=glzjinmod -e MYSQL_HOST=$web_ip -e MYSQL_USER=root -e MYSQL_DB=sspanel -e MYSQL_PASS=$root_pwd --network=host --log-opt max-size=50m --log-opt max-file=3 --restart=always origined/ssr:latest
         greenbg "恭喜您，后端节点已搭建成功"   
 	fi       
 }
