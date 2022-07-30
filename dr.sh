@@ -5,7 +5,7 @@
 #   Author: Azure <3074744699@qq.com>                                #
 #===================================================================#
 #一键脚本
-#version=v1.1
+
 #check root
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
