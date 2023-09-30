@@ -90,7 +90,7 @@ get_v2ray_url(){
 	-e node_id=$ID -e sspanel_url="$URL" -e key="$KEY" -e TZ="Asia/Shanghai"  -p $port:$port/tcp -p $port:$port/udp \
 	--log-opt max-size=10m --log-opt max-file=5 \
 	--restart=always \
-	docker pull v2ray/official
+	docker pull esme518/docker-v2ray
 }
 
 function rm_ssr(){
