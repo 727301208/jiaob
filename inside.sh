@@ -57,7 +57,7 @@ get_SSR_url(){
 	read -p "回车确定对接....."
 	name="SSR-$port"
     echo "$name" >> ssr_port.conf
-	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always docker pull siji/v2ray
+	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always docker woaizyg/rico-free:v2ray
 }
 
 get_v2ray_url(){
@@ -90,8 +90,7 @@ get_v2ray_url(){
 	-e node_id=$ID -e sspanel_url="$URL" -e key="$KEY" -e TZ="Asia/Shanghai"  -p $port:$port/tcp -p $port:$port/udp \
 	--log-opt max-size=10m --log-opt max-file=5 \
 	--restart=always \
-	docker pull siji/v2ray
-}
+	docker woaizyg/rico-free:v2ray
 
 function rm_ssr(){
 li=$(wc -l < ssr_port.conf)
