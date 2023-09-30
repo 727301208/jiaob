@@ -199,4 +199,3 @@ case "${selected}" in
     echo -e "[${red}Error${plain}] 请输入[1-5]的数值"
     ;;
 esac
-done
