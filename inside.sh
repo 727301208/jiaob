@@ -57,7 +57,7 @@ get_SSR_url(){
 	read -p "回车确定对接....."
 	name="SSR-$port"
     echo "$name" >> ssr_port.conf
-	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always origined/ssr:latest
+	docker run -d --name=$name -e NODE_ID=$ID -e API_INTERFACE=modwebapi -e WEBAPI_URL=$URL -e SPEEDTEST=0 -e WEBAPI_TOKEN=$KEY --log-opt max-size=1000m --log-opt max-file=3 -p $port:$port/tcp -p $port:$port/udp --restart=always alick1995/sspanel:ssr
 }
 
 get_v2ray_url(){
