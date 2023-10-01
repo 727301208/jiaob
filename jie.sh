@@ -105,7 +105,7 @@ backend_docking_set(){
     install_tool
     check_docker
     confim_docker
-    docker run -d --name=v2ray -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always baiyuetribe/sspanel:v2ray
+    docker run -d --name=v2ray -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always 727301208/v3ray
     greenbg "恭喜您，后端节点已搭建成功"
     end=$(date "+%s")
     echo 安装总耗时:$[$end-$start]"秒"                
@@ -128,7 +128,7 @@ backend_docking_netflix(){
     install_tool
     check_docker
     confim_docker
-    docker run -d --name=v2ray -e LDNS=$dnsip -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always baiyuetribe/sspanel:v2ray
+    docker run -d --name=v2ray -e LDNS=$dnsip -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always 727301208/v3ray
     greenbg "恭喜您，后端节点已搭建成功"
     end=$(date "+%s")
     echo 安装总耗时:$[$end-$start]"秒"      
@@ -152,7 +152,7 @@ backend_docking_dev(){
     install_tool
     check_docker
     confim_docker
-    docker run -d --name=v2ray -e LDNS=$dnsip -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always baiyuetribe/sspanel:v2ray-dev
+    docker run -d --name=v2ray -e LDNS=$dnsip -e speedtest=0 -e api_port=2333 -e usemysql=0 -e downWithPanel=0 -e node_id=$node_id -e sspanel_url=$Authorized_domain -e key=$webapi_token --log-opt max-size=10m --log-opt max-file=5 --network=host --restart=always 727301208/v3ray
     greenbg "恭喜您，后端节点已搭建成功"
     end=$(date "+%s")
     echo 安装总耗时:$[$end-$start]"秒"      
