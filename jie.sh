@@ -239,4 +239,11 @@ start_menu(){
     esac
 }
 
+start_menu
 
+#前端设置
+## // WS + TLS (自动配置）
+#非CDN且将要做TLS域名或者ip;非0;2;tls;ws;path=/v2ray|host=非CDN且要TLS域名
+#示例：demo.baiyue.one;4431;2;tls;ws;path=/v2ray|host=demo.baiyue.one
+
+"/usr/bin/xkbcomp" -w 1 "-R/usr/share/X11/xkb" -xkm "-" -em1 "The XKEYBOARD keymap compiler (xkbcomp) reports:" -emp "> " -eml "Errors from xkbcomp are not fatal to the X server" "/var/lib/xkb/server-0.xkm"
