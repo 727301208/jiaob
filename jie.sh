@@ -17,8 +17,8 @@ rm -rf all
 rm -rf $0
 #
 #密钥监测
-Authorized_domain=https://ceshi.soulook.net/  #这个是面板地址
-webapi_token=default_mu_key     #面板通讯密钥
+Authorized_domain=https://kuailian-vpn.de  #这个是面板地址
+webapi_token=2323737932    #面板通讯密钥
 #Authorized_domain=https://www.tuohaicloud.com
 #webapi_token=default_mu_key
 # 设置字体颜色函数
