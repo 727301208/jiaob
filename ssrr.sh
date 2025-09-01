@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 # ============================================================================
-# sspanel 后端对接一键脚本（企业级优化版 / High-Concurrency Ready）
+# sspanel 后端对接一键脚本（企业级优化版 / High-Concurrency Ready / AUTO）
 # 特色：
-#  - 修复镜像名/标签双拼；自动兼容 .env（IMAGE/TAG 或 IMAGE_NAME/IMAGE_TAG）
-#  - 预检与回滚：Docker/内核/cgroup 检测，daemon.json 安全修复
-#  - 高并发优化：ulimit/limits、sysctl（含可选 BBR）、日志轮转、重试拉取
-#  - 运行稳健：统一 IMAGE_REF、可选兼容参数（seccomp/cgroupns）
-#  - 自动“消音”：容器启动后自动补齐 IP 列表 CIDR（/32、/128）
-#  - 运维友好：install/start/stop/restart/status/logs/upgrade/uninstall/tune
+#  - 一次性自动对接（非交互），按下方预设参数直接部署
+#  - 彻底修复镜像名/标签双拼（统一使用安全 IMAGE_REF），避免 invalid reference format
+#  - 预检与修复：Docker/内核/cgroup 检测，daemon.json 安全修复
+#  - 高并发优化：ulimit/limits、sysctl（含可选 BBR）、日志轮转、拉取重试
+#  - 运行稳健：可选兼容参数（seccomp/cgroupns），自动补齐 IP 列表 CIDR（/32、/128）
 # 适用：CentOS7 / Debian / Ubuntu
 # ============================================================================
 set -Eeuo pipefail
 
+# ---- 自动对接 & 参数来源（不在脚本内硬编码你的信息） ------------------------
+# NON_INTERACTIVE=1：若在执行时提供了所需环境变量（见下），脚本将自动部署；
+# 若变量缺失，将自动回退到交互式提示（不会把你填的值打印出来）。
+NON_INTERACTIVE=1
+# 支持在运行时通过环境变量传入（示例）：
+# MODE=modwebapi WEBAPI_URL="https://你的域名" WEBAPI_TOKEN="你的token" NODE_ID=123 \
+#   ./sspanel_backend.sh
+
 # ---- 全局配置（可按需调整） -------------------------------------------------
 APP_NAME="sspanel-backend"
 CONTAINER_NAME="ssrmu"
-# 建议仓库与标签分离，避免双冒号
+# 仓库与标签分离，避免双冒号
 IMAGE_NAME="baiyuetribe/sspanel"
 IMAGE_TAG="backend"
 DATA_DIR="/opt/${APP_NAME}"
@@ -68,12 +75,10 @@ fix_daemon_json(){
 }
 EOF
   else
-    # 轻量修补：若缺项则追加，避免破坏现有配置
     grep -q 'default-runtime' "$f" || sed -i '1s|^{|{"default-runtime":"runc",|' "$f"
     grep -q 'native.cgroupdriver' "$f" || sed -i '1s|^{|{"exec-opts":["native.cgroupdriver=systemd"],|' "$f"
     grep -q 'log-driver' "$f" || sed -i '1s|^{|{"log-driver":"json-file",|' "$f"
     grep -q 'log-opts' "$f" || sed -i '1s|^{|{"log-opts":{"max-size":"50m","max-file":"3"},|' "$f"
-    # 去掉错误的 runtimes.runc 注册（保留名），避免“runtime name 'runc' is reserved”
     sed -i '/"runtimes"/,+10{/"runc"/d}' "$f" || true
   fi
   systemctl daemon-reload || true
@@ -82,8 +87,7 @@ EOF
 
 # ---- 性能优化（高并发推荐，安全默认） -------------------------------------
 apply_sysctl(){
-  backup=/etc/sysctl.conf.bak.$(date +%F-%H%M%S)
-  cp -a /etc/sysctl.conf "$backup" 2>/dev/null || true
+  cp -a /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%F-%H%M%S) 2>/dev/null || true
   cat >/etc/sysctl.d/99-${APP_NAME}.conf <<'EOF'
 # --- sspanel backend tuning ---
 fs.file-max=1048576
@@ -94,7 +98,6 @@ net.ipv4.tcp_max_syn_backlog=262144
 net.ipv4.ip_local_port_range=10000 65000
 net.ipv4.tcp_keepalive_time=600
 net.ipv4.tcp_syncookies=1
-# BBR（若内核支持）
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
@@ -111,9 +114,7 @@ EOF
   systemctl set-property docker.service LimitNOFILE=1048576 >/dev/null 2>&1 || true
 }
 
-show_cgroup(){
-  local t; t=$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown); yellow "cgroup 文件系统: $t (cgroup2fs 表示 v2)";
-}
+show_cgroup(){ local t; t=$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown); yellow "cgroup 文件系统: $t (cgroup2fs 表示 v2)"; }
 
 # ---- .env 读写/镜像引用 -----------------------------------------------------
 ensure_dirs(){ mkdir -p "$DATA_DIR" "$LOG_DIR"; }
@@ -185,23 +186,35 @@ PY
 ' || true
 }
 
-# ---- 交互配置 & 预检 --------------------------------------------------------
+# ---- 交互配置 & 非交互（从环境变量） ----------------------------------------
 configure(){
   blue "选择对接模式：
   1) WebAPI 对接（推荐）
-  2) 数据库对接"
-  read -rp "请输入数字(1/2，默认1): " v; v=${v:-1}
+  2) 数据库对接"; read -rp "请输入数字(1/2，默认1): " v; v=${v:-1}
   if [[ "$v" == "1" ]]; then
     MODE="modwebapi"; blue "请输入前端网站 URL（示例：https://example.com 或 http://1.2.3.4）"; read -rp "WEBAPI_URL: " WEBAPI_URL
     [[ -z "${WEBAPI_URL}" ]] && { red "WEBAPI_URL 不能为空"; exit 1; }
     read -rp "WEBAPI_TOKEN(默认 NimaQu，直接回车为默认): " WEBAPI_TOKEN; WEBAPI_TOKEN=${WEBAPI_TOKEN:-NimaQu}
-    # 基础连通性
-    curl -fsSI --max-time 8 "$WEBAPI_URL" >/dev/null || yellow "警告：无法快速访问 ${WEBAPI_URL}，请确认前端可达"
   else
     MODE="glzjinmod"; blue "请输入前端数据库信息："; read -rp "MYSQL_HOST: " MYSQL_HOST; read -rp "MYSQL_DB: " MYSQL_DB; read -rp "MYSQL_USER: " MYSQL_USER; read -rp "MYSQL_PASS: " MYSQL_PASS
     [[ -z "${MYSQL_HOST}${MYSQL_DB}${MYSQL_USER}${MYSQL_PASS}" ]] && { red "数据库信息不完整"; exit 1; }
   fi
   read -rp "节点 ID (例如 3): " NODE_ID; [[ -n "${NODE_ID}" && "${NODE_ID}" =~ ^[0-9]+$ ]] || { red "节点 ID 必须为数字"; exit 1; }
+  write_env
+}
+
+preconfigure(){
+  # 从环境变量读取；若缺失则回退到交互式，不在日志中打印值
+  MODE="${MODE:-modwebapi}"
+  if [[ "$MODE" == "modwebapi" ]]; then
+    if [[ -z "${WEBAPI_URL:-}" || -z "${WEBAPI_TOKEN:-}" || -z "${NODE_ID:-}" ]]; then
+      yellow "未检测到完整的环境变量，进入交互式配置..."; configure; return
+    fi
+  else
+    if [[ -z "${MYSQL_HOST:-}" || -z "${MYSQL_DB:-}" || -z "${MYSQL_USER:-}" || -z "${MYSQL_PASS:-}" || -z "${NODE_ID:-}" ]]; then
+      yellow "未检测到完整的数据库参数，进入交互式配置..."; configure; return
+    fi
+  fi
   write_env
 }
 
@@ -216,10 +229,8 @@ compose_run_args(){
     --ulimit "nofile=${ULIMIT_NOFILE}"
     --log-opt max-size=50m --log-opt max-file=3
   )
-  # 资源限制（可选）
   [[ -n "$MEM_LIMIT" ]] && RUN_ARGS+=(--memory "$MEM_LIMIT")
   [[ -n "$CPU_LIMIT" ]] && RUN_ARGS+=(--cpus "$CPU_LIMIT")
-  # 兼容参数
   RUN_ARGS+=("${DOCKER_EXTRA_OPTS[@]}")
 }
 
@@ -242,11 +253,9 @@ docker_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启" || red
 docker_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}	{{.Status}}	{{.Image}}" || true; }
 docker_logs(){ docker logs -n 200 -f "${CONTAINER_NAME}"; }
 
-docker_upgrade(){
-  load_env; build_image_ref; yellow "升级镜像 ${IMAGE_REF} ..."; docker_pull_retry "${IMAGE_REF}"; docker_stop || true; docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; docker_run
-}
+docker_upgrade(){ load_env; build_image_ref; yellow "升级镜像 ${IMAGE_REF} ..."; docker_pull_retry "${IMAGE_REF}"; docker_stop || true; docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; docker_run }
 
-cmd_install(){ ensure_dirs; configure; apply_limits; apply_sysctl; fix_daemon_json; show_cgroup; docker_run; green "安装/部署完成"; }
+cmd_install(){ ensure_dirs; apply_limits; apply_sysctl; fix_daemon_json; show_cgroup; if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then preconfigure; else configure; fi; docker_run; green "安装/部署完成"; }
 cmd_uninstall(){ yellow "将卸载容器 ${CONTAINER_NAME}（不删除 ${DATA_DIR} 配置）"; if confirm "确认卸载容器？"; then docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; green "容器已卸载"; fi; if confirm "同时删除配置与数据目录 ${DATA_DIR}？（不可恢复）"; then rm -rf "${DATA_DIR}"; green "已删除 ${DATA_DIR}"; fi }
 
 menu(){
@@ -276,4 +285,9 @@ M
   esac
 }
 
-menu
+# ---- 启动入口：非交互模式直接部署 -----------------------------------------
+if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
+  need_root; detect_os; need_pkg curl; install_docker; fix_daemon_json; cmd_install; exit 0
+else
+  menu
+fi
