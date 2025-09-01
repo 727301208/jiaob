@@ -2,7 +2,8 @@
 # ============================================================================
 # sspanel 后端对接一键脚本（企业级优化版 / High-Concurrency Ready / AUTO）
 # 特色：
-#  - 一次性自动对接（非交互），按下方预设参数直接部署
+#  - 一次性自动对接（可非交互），支持从环境变量或 .env 注入参数
+#  - 自清洁：自动去除 CRLF / UTF-8 BOM，避免 “unexpected end of file”
 #  - 彻底修复镜像名/标签双拼（统一使用安全 IMAGE_REF），避免 invalid reference format
 #  - 预检与修复：Docker/内核/cgroup 检测，daemon.json 安全修复
 #  - 高并发优化：ulimit/limits、sysctl（含可选 BBR）、日志轮转、拉取重试
@@ -11,10 +12,19 @@
 # ============================================================================
 set -Eeuo pipefail
 
+# ---- 自清洁：去掉 Windows CRLF 和 UTF-8 BOM，修复后自我重启 ----
+if grep -q $'\r' "$0" 2>/dev/null || [ "$(head -c3 "$0" | od -An -t x1 | tr -d ' \n')" = "efbbbf" ]; then
+  sed -i 's/\r$//' "$0" 2>/dev/null || true
+  sed -i '1s/^\xEF\xBB\xBF//' "$0" 2>/dev/null || true
+  tail -c1 "$0" | read -r _ || printf '\n' >> "$0"
+  echo "[self-heal] 已清理 CRLF/BOM，重新执行脚本..."
+  exec bash "$0" "$@"
+fi
+
 # ---- 自动对接 & 参数来源（不在脚本内硬编码你的信息） ------------------------
 # NON_INTERACTIVE=1：若在执行时提供了所需环境变量（见下），脚本将自动部署；
 # 若变量缺失，将自动回退到交互式提示（不会把你填的值打印出来）。
-NON_INTERACTIVE=1
+NON_INTERACTIVE=${NON_INTERACTIVE:-1}
 # 支持在运行时通过环境变量传入（示例）：
 # MODE=modwebapi WEBAPI_URL="https://你的域名" WEBAPI_TOKEN="你的token" NODE_ID=123 \
 #   ./sspanel_backend.sh
@@ -42,7 +52,7 @@ MEM_LIMIT=""          # 例："2g"  留空表示不限制
 CPU_LIMIT=""          # 例："2"   留空表示不限制
 
 # ---- 颜色/通用 --------------------------------------------------------------
-cecho(){ local c="$1"; shift; echo -e "[${c}m$*[0m"; }
+cecho(){ local c="$1"; shift; echo -e "\033[${c}m$*\033[0m"; }
 blue(){ cecho "34;01" "$@"; }
 green(){ cecho "32;01" "$@"; }
 yellow(){ cecho "33;01" "$@"; }
@@ -153,7 +163,7 @@ set -e
 f=$(grep -R -l "\"forbidden_ip\"" /root /usr /etc /opt /app 2>/dev/null | head -n1 || true)
 [ -z "$f" ] && f=$(find / -maxdepth 3 -type f -name "user-config.json" 2>/dev/null | head -n1 || true)
 [ -z "$f" ] && { echo "未找到配置文件，跳过补齐"; exit 0; }
-python3 - <<PY "$f"
+python3 - "$f" <<'PY'
 import json, sys
 p=sys.argv[1]
 with open(p, 'r', encoding='utf-8') as fh:
@@ -188,9 +198,7 @@ PY
 
 # ---- 交互配置 & 非交互（从环境变量） ----------------------------------------
 configure(){
-  blue "选择对接模式：
-  1) WebAPI 对接（推荐）
-  2) 数据库对接"; read -rp "请输入数字(1/2，默认1): " v; v=${v:-1}
+  blue "选择对接模式：\n  1) WebAPI 对接（推荐）\n  2) 数据库对接"; read -rp "请输入数字(1/2，默认1): " v; v=${v:-1}
   if [[ "$v" == "1" ]]; then
     MODE="modwebapi"; blue "请输入前端网站 URL（示例：https://example.com 或 http://1.2.3.4）"; read -rp "WEBAPI_URL: " WEBAPI_URL
     [[ -z "${WEBAPI_URL}" ]] && { red "WEBAPI_URL 不能为空"; exit 1; }
@@ -216,6 +224,31 @@ preconfigure(){
     fi
   fi
   write_env
+}
+
+# ---- 生成空白 .env 模板（不含敏感值） -------------------------------------
+cmd_init_env_template(){
+  ensure_dirs
+  if [[ -f "$ENV_FILE" ]]; then
+    if ! confirm "${ENV_FILE} 已存在，是否覆盖？"; then return; fi
+  fi
+  cat >"$ENV_FILE" <<EOF
+# sspanel backend env (template)
+MODE=modwebapi               # modwebapi / glzjinmod
+NODE_ID=
+IMAGE=${IMAGE_NAME}
+TAG=${IMAGE_TAG}
+# WebAPI
+WEBAPI_URL=
+WEBAPI_TOKEN=
+# DB
+MYSQL_HOST=
+MYSQL_DB=
+MYSQL_USER=
+MYSQL_PASS=
+EOF
+  chmod 600 "$ENV_FILE"
+  green "已生成模板：$ENV_FILE （请填入你的真实值）"
 }
 
 # ---- 容器生命周期 -----------------------------------------------------------
@@ -250,21 +283,17 @@ docker_run(){
 docker_start(){ docker start "${CONTAINER_NAME}" && green "已启动" || red "容器不存在"; }
 docker_stop(){ docker stop "${CONTAINER_NAME}" && green "已停止" || true; }
 docker_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启" || red "容器不存在"; }
-docker_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}	{{.Status}}	{{.Image}}" || true; }
+docker_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" || true; }
 docker_logs(){ docker logs -n 200 -f "${CONTAINER_NAME}"; }
 
 # ---- 一键快速对接（读取现有 /opt/sspanel-backend/.env，直接部署） ---------
 cmd_quick(){
   ensure_dirs; need_pkg curl; install_docker; fix_daemon_json
   [[ -s "${ENV_FILE}" ]] || { red "未找到 ${ENV_FILE}，请先执行安装/配置或手动写入 .env"; exit 1; }
-  # 只加载 .env，不打印私参
-  set -a; . "${ENV_FILE}"; set +a
-  # 安全镜像名
+  set -a; . "${ENV_FILE}"; set +a   # 只加载，不回显私参
   build_image_ref; yellow "Using image: ${IMAGE_REF}"
-  # 拉镜像 + 重建
   docker_pull_retry "${IMAGE_REF}"
   docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
-  # 运行参数
   ENV_ARGS=(-e NODE_ID="${NODE_ID}" -e API_INTERFACE="${MODE:-modwebapi}")
   if [[ "${MODE:-modwebapi}" == "modwebapi" ]]; then
     ENV_ARGS+=( -e WEBAPI_URL="${WEBAPI_URL}" -e WEBAPI_TOKEN="${WEBAPI_TOKEN}" )
@@ -297,6 +326,7 @@ menu(){
 7) 升级镜像并重建
 8) 卸载（可选保留配置）
 9) 快速对接（读取现有 .env 直接部署）
+10) 生成 .env 模板（空白示例）
 0) 退出
 M
   read -rp "请选择: " n
@@ -310,14 +340,20 @@ M
     7) need_root; docker_upgrade ;;
     8) need_root; cmd_uninstall ;;
     9) need_root; cmd_quick ;;
+    10) need_root; cmd_init_env_template ;;
     0) exit 0 ;;
     *) red "无效选择"; sleep 1; menu ;;
   esac
 }
 
-# ---- 启动入口：非交互模式直接部署 -----------------------------------------
+# ---- 启动入口：非交互模式优先走 quick（若有 .env），否则 install -----------
 if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
-  need_root; detect_os; need_pkg curl; install_docker; fix_daemon_json; cmd_install; exit 0
+  need_root; detect_os; need_pkg curl; install_docker; fix_daemon_json
+  if [[ -s "$ENV_FILE" ]]; then
+    cmd_quick; exit 0
+  else
+    cmd_install; exit 0
+  fi
 else
   menu
 fi
