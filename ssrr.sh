@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # sspanel 后端对接一键脚本（安全版）
-# 作者：为你重构（保留原功能，增强健壮性）
-# 系统：CentOS7 / Debian / Ubuntu
-# 功能：安装/启动/停止/重启/卸载、日志、WebAPI/DB 对接
 set -Eeuo pipefail
 
 APP_NAME="sspanel-backend"
 CONTAINER_NAME="ssrmu"
-IMAGE_NAME="baiyuetribe/sspanel:backend"
-IMAGE_TAG="latest"   # 建议你改成固定 tag，如 2025-08-xx
+# 建议将仓库与标签分开，避免双冒号
+IMAGE_NAME="baiyuetribe/sspanel"
+IMAGE_TAG="backend"
 DATA_DIR="/opt/${APP_NAME}"
 ENV_FILE="${DATA_DIR}/.env"
 LOG_DIR="${DATA_DIR}/logs"
@@ -44,34 +42,38 @@ install_docker(){
   fi
   yellow "正在安装 Docker ..."
   case "$OS_ID" in
-    centos|rhel)
-      # CentOS 7 EOL，优先尝试官方脚本；失败可手动换源
-      curl -fsSL https://get.docker.com | bash || { red "自动安装失败，请手动安装 docker-ce"; exit 1; }
-      ;;
-    debian|ubuntu)
-      curl -fsSL https://get.docker.com | bash || { red "自动安装失败，请手动安装 docker-ce"; exit 1; }
-      ;;
-    *)
-      red "未识别的系统：${OS_ID}，请手动安装 Docker 后重试。"
-      exit 1
-      ;;
+    centos|rhel|debian|ubuntu) curl -fsSL https://get.docker.com | bash || { red "自动安装失败，请手动安装 docker-ce"; exit 1; } ;;
+    *) red "未识别的系统：${OS_ID}，请手动安装 Docker 后重试。"; exit 1 ;;
   esac
   systemctl enable --now docker
   green "Docker 安装完成。"
 }
 
 # ========== 读取/写入配置 ==========
-ensure_dirs(){
-  mkdir -p "$DATA_DIR" "$LOG_DIR"
+ensure_dirs(){ mkdir -p "$DATA_DIR" "$LOG_DIR"; }
+
+# 将可能带冒号的镜像名拆分为仓库与标签
+_split_image_to_vars(){
+  local img="$1"; local -n _repo="$2"; local -n _tag="$3"
+  _repo="$img"; _tag=""
+  if [[ "$img" == *:* ]]; then
+    _repo="${img%%:*}"
+    _tag="${img##*:}"
+  fi
 }
 
 write_env(){
+  # 优先用当前脚本内的 IMAGE_NAME/IMAGE_TAG，且若 IMAGE_NAME 自带 :tag，则拆分并覆盖 TAG
+  local _repo _tag
+  _split_image_to_vars "$IMAGE_NAME" _repo _tag
+  [[ -n "${IMAGE_TAG:-}" ]] && _tag="$IMAGE_TAG"
+
   cat > "$ENV_FILE" <<EOF
 # sspanel backend env
 MODE=${MODE}               # modwebapi / glzjinmod
 NODE_ID=${NODE_ID}
-IMAGE=${IMAGE_NAME}
-TAG=${IMAGE_TAG}
+IMAGE=${_repo}
+TAG=${_tag}
 # WebAPI
 WEBAPI_URL=${WEBAPI_URL:-}
 WEBAPI_TOKEN=${WEBAPI_TOKEN:-}
@@ -85,10 +87,23 @@ EOF
   green "配置已写入：${ENV_FILE}"
 }
 
-load_env(){
-  if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
+load_env(){ [[ -f "$ENV_FILE" ]] && . "$ENV_FILE" || true; }
+
+# 兼容两套命名，构建最终镜像引用
+build_image_ref(){
+  # 先读 .env（可能是 IMAGE/TAG，也可能是 IMAGE_NAME/IMAGE_TAG）
+  local _IMAGE="${IMAGE:-${IMAGE_NAME:-}}"
+  local _TAG="${TAG:-${IMAGE_TAG:-}}"
+
+  if [[ -z "$_IMAGE" ]]; then
+    _IMAGE="$IMAGE_NAME"
+  fi
+
+  # 如果 _IMAGE 已经包含 :tag，就直接用它；否则再拼 _TAG（非空才拼）
+  if [[ "$_IMAGE" == *:* ]]; then
+    IMAGE_REF="$_IMAGE"
+  else
+    IMAGE_REF="${_IMAGE}${_TAG:+:${_TAG}}"
   fi
 }
 
@@ -127,33 +142,20 @@ docker_run(){
   load_env
   [[ -z "${MODE:-}" ]] && { red "未检测到配置，请先执行 安装/配置"; exit 1; }
 
-  # 统一可见的 --env
-  ENV_ARGS=(
-    -e NODE_ID="${NODE_ID}"
-    -e API_INTERFACE="${MODE}"
-  )
+  build_image_ref
+  yellow "Using image: ${IMAGE_REF}"
+  docker pull "${IMAGE_REF}"
 
+  ENV_ARGS=(-e NODE_ID="${NODE_ID}" -e API_INTERFACE="${MODE}")
   if [[ "$MODE" == "modwebapi" ]]; then
     ENV_ARGS+=(-e WEBAPI_URL="${WEBAPI_URL}" -e WEBAPI_TOKEN="${WEBAPI_TOKEN}")
   else
-    ENV_ARGS+=(
-      -e MYSQL_HOST="${MYSQL_HOST}"
-      -e MYSQL_USER="${MYSQL_USER}"
-      -e MYSQL_DB="${MYSQL_DB}"
-      -e MYSQL_PASS="${MYSQL_PASS}"
-    )
+    ENV_ARGS+=(-e MYSQL_HOST="${MYSQL_HOST}" -e MYSQL_USER="${MYSQL_USER}" -e MYSQL_DB="${MYSQL_DB}" -e MYSQL_PASS="${MYSQL_PASS}")
   fi
 
-  # 你可改为 bridge 并自行 -p 映射；保留 host 以兼容原习惯
   NET_ARG="--network=host"
-
-  # 打标签，便于识别
   LABELS=(--label "app=${APP_NAME}" --label "mode=${MODE}")
 
-  # 拉镜像（指定 tag）
-  docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
-
-  # 若已存在同名容器则替换
   if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
     yellow "检测到旧容器，先移除..."
     docker rm -f "${CONTAINER_NAME}" || true
@@ -166,18 +168,12 @@ docker_run(){
     --restart=always \
     --log-opt max-size=50m --log-opt max-file=3 \
     "${LABELS[@]}" \
-    "${IMAGE_NAME}:${IMAGE_TAG}"
+    "${IMAGE_REF}"
 
   green "容器已启动：${CONTAINER_NAME}"
 }
 
-cmd_install(){
-  ensure_dirs
-  configure
-  docker_run
-  green "安装/部署完成。"
-}
-
+cmd_install(){ ensure_dirs; configure; docker_run; green "安装/部署完成。"; }
 cmd_start(){ docker start "${CONTAINER_NAME}" && green "已启动"; }
 cmd_stop(){ docker stop "${CONTAINER_NAME}" && green "已停止"; }
 cmd_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启"; }
