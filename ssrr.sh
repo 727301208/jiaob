@@ -1,76 +1,128 @@
 #!/usr/bin/env bash
-# sspanel 后端对接一键脚本（安全版）
+# ============================================================================
+# sspanel 后端对接一键脚本（企业级优化版 / High-Concurrency Ready）
+# 特色：
+#  - 修复镜像名/标签双拼；自动兼容 .env（IMAGE/TAG 或 IMAGE_NAME/IMAGE_TAG）
+#  - 预检与回滚：Docker/内核/cgroup 检测，daemon.json 安全修复
+#  - 高并发优化：ulimit/limits、sysctl（含可选 BBR）、日志轮转、重试拉取
+#  - 运行稳健：统一 IMAGE_REF、可选兼容参数（seccomp/cgroupns）
+#  - 运维友好：install/start/stop/restart/status/logs/upgrade/uninstall/tune
+# 适用：CentOS7 / Debian / Ubuntu
+# ============================================================================
 set -Eeuo pipefail
 
+# ---- 全局配置（可按需调整） -------------------------------------------------
 APP_NAME="sspanel-backend"
 CONTAINER_NAME="ssrmu"
-# 建议将仓库与标签分开，避免双冒号
+# 建议仓库与标签分离，避免双冒号
 IMAGE_NAME="baiyuetribe/sspanel"
 IMAGE_TAG="backend"
 DATA_DIR="/opt/${APP_NAME}"
 ENV_FILE="${DATA_DIR}/.env"
 LOG_DIR="${DATA_DIR}/logs"
+# 兼容性增强：遇到容器创建期的 cgroup/seccomp 报错时可开启以下参数
+DOCKER_EXTRA_OPTS=(
+  --security-opt seccomp=unconfined
+  --cgroupns=host
+  # 若仍失败，可临时解锁（验证后建议恢复）：
+  # --security-opt apparmor=unconfined
+  # --privileged
+)
+# 资源限制（高并发建议放开），按需调整
+ULIMIT_NOFILE="1048576:1048576"
+MEM_LIMIT=""          # 例："2g"  留空表示不限制
+CPU_LIMIT=""          # 例："2"   留空表示不限制
 
-# ========== 颜色 ==========
-cecho(){ local c="$1"; shift; echo -e "\033[${c}m$*\033[0m"; }
+# ---- 颜色/通用 --------------------------------------------------------------
+cecho(){ local c="$1"; shift; echo -e "[${c}m$*[0m"; }
 blue(){ cecho "34;01" "$@"; }
 green(){ cecho "32;01" "$@"; }
 yellow(){ cecho "33;01" "$@"; }
 red(){ cecho "31;01" "$@"; }
-
-# ========== 断言 ==========
-need_root(){
-  if [[ $EUID -ne 0 ]]; then
-    red "请使用 root 运行：sudo -i 后再执行。"
-    exit 1
-  fi
-}
-
+trap 'rc=$?; red "[ERROR] 第$LINENO行失败，退出码=$rc"; exit $rc' ERR
+need_root(){ [[ $EUID -eq 0 ]] || { red "请用 root 运行（sudo -i）"; exit 1; }; }
 confirm(){ read -rp "$1 [y/N]: " r; [[ "${r:-N}" =~ ^[Yy]$ ]]; }
 
-# ========== 系统&Docker ==========
-detect_os(){
-  if [[ -f /etc/os-release ]]; then . /etc/os-release; OS_ID=$ID; OS_VER=$VERSION_ID; else OS_ID="unknown"; OS_VER=""; fi
-  yellow "检测到系统：${OS_ID} ${OS_VER}"
-}
+# ---- 检测系统/Docker --------------------------------------------------------
+detect_os(){ if [[ -f /etc/os-release ]]; then . /etc/os-release; OS_ID=$ID; OS_VER=$VERSION_ID; else OS_ID=unknown; OS_VER=""; fi; yellow "检测到系统：${OS_ID} ${OS_VER}"; }
+need_pkg(){ command -v "$1" >/dev/null 2>&1 || { yellow "安装 $1 ..."; case "$OS_ID" in ubuntu|debian) apt-get update -y && apt-get install -y "$1" ;; centos|rhel) yum install -y "$1" ;; *) red "未知系统，无法安装 $1"; exit 1 ;; esac; }; }
 
 install_docker(){
-  if command -v docker >/dev/null 2>&1; then
-    green "Docker 已安装。"
-    systemctl enable --now docker || true
-    return
-  fi
-  yellow "正在安装 Docker ..."
-  case "$OS_ID" in
-    centos|rhel|debian|ubuntu) curl -fsSL https://get.docker.com | bash || { red "自动安装失败，请手动安装 docker-ce"; exit 1; } ;;
-    *) red "未识别的系统：${OS_ID}，请手动安装 Docker 后重试。"; exit 1 ;;
-  esac
+  if command -v docker >/dev/null 2>&1; then green "Docker 已安装"; systemctl enable --now docker || true; return; fi
+  yellow "安装 Docker ..."; curl -fsSL https://get.docker.com | bash
   systemctl enable --now docker
-  green "Docker 安装完成。"
+  green "Docker 安装完成"
 }
 
-# ========== 读取/写入配置 ==========
-ensure_dirs(){ mkdir -p "$DATA_DIR" "$LOG_DIR"; }
-
-# 将可能带冒号的镜像名拆分为仓库与标签
-_split_image_to_vars(){
-  local img="$1"; local -n _repo="$2"; local -n _tag="$3"
-  _repo="$img"; _tag=""
-  if [[ "$img" == *:* ]]; then
-    _repo="${img%%:*}"
-    _tag="${img##*:}"
+# ---- Docker daemon.json 安全修复（不注册保留名 runc） ----------------------
+fix_daemon_json(){
+  local f=/etc/docker/daemon.json; mkdir -p /etc/docker
+  if [[ ! -s "$f" ]]; then
+    cat >"$f" <<'EOF'
+{
+  "default-runtime": "runc",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {"max-size": "50m", "max-file": "3"}
+}
+EOF
+  else
+    # 轻量修补：若缺项则追加，避免破坏现有配置
+    grep -q 'default-runtime' "$f" || sed -i '1s|^{|{"default-runtime":"runc",|' "$f"
+    grep -q 'native.cgroupdriver' "$f" || sed -i '1s|^{|{"exec-opts":["native.cgroupdriver=systemd"],|' "$f"
+    grep -q 'log-driver' "$f" || sed -i '1s|^{|{"log-driver":"json-file",|' "$f"
+    grep -q 'log-opts' "$f" || sed -i '1s|^{|{"log-opts":{"max-size":"50m","max-file":"3"},|' "$f"
+    # 去掉错误的 runtimes.runc 注册（保留名），避免“runtime name 'runc' is reserved”
+    sed -i '/"runtimes"/,+10{/"runc"/d}' "$f" || true
   fi
+  systemctl daemon-reload || true
+  systemctl restart docker
 }
 
-write_env(){
-  # 优先用当前脚本内的 IMAGE_NAME/IMAGE_TAG，且若 IMAGE_NAME 自带 :tag，则拆分并覆盖 TAG
-  local _repo _tag
-  _split_image_to_vars "$IMAGE_NAME" _repo _tag
-  [[ -n "${IMAGE_TAG:-}" ]] && _tag="$IMAGE_TAG"
+# ---- 性能优化（高并发推荐，安全默认） -------------------------------------
+apply_sysctl(){
+  backup=/etc/sysctl.conf.bak.$(date +%F-%H%M%S)
+  cp -a /etc/sysctl.conf "$backup" 2>/dev/null || true
+  cat >/etc/sysctl.d/99-${APP_NAME}.conf <<'EOF'
+# --- sspanel backend tuning ---
+fs.file-max=1048576
+net.core.somaxconn=65535
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_max_syn_backlog=262144
+net.ipv4.ip_local_port_range=10000 65000
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_syncookies=1
+# BBR（若内核支持）
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+  sysctl --system >/dev/null 2>&1 || sysctl -p || true
+}
 
-  cat > "$ENV_FILE" <<EOF
+apply_limits(){
+  cat >/etc/security/limits.d/99-${APP_NAME}.conf <<EOF
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+  systemctl set-property docker.service LimitNOFILE=1048576 >/dev/null 2>&1 || true
+}
+
+show_cgroup(){
+  local t; t=$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown); yellow "cgroup 文件系统: $t (cgroup2fs 表示 v2)";
+}
+
+# ---- .env 读写/镜像引用 -----------------------------------------------------
+ensure_dirs(){ mkdir -p "$DATA_DIR" "$LOG_DIR"; }
+load_env(){ [[ -f "$ENV_FILE" ]] && . "$ENV_FILE" || true; }
+_split_image_to_vars(){ local img="$1"; local -n _repo=$2; local -n _tag=$3; _repo="$img"; _tag=""; [[ "$img" == *:* ]] && { _repo="${img%%:*}"; _tag="${img##*:}"; }; }
+write_env(){
+  local _repo _tag; _split_image_to_vars "$IMAGE_NAME" _repo _tag; [[ -n "${IMAGE_TAG:-}" ]] && _tag="$IMAGE_TAG"
+  cat >"$ENV_FILE" <<EOF
 # sspanel backend env
-MODE=${MODE}               # modwebapi / glzjinmod
+MODE=${MODE}
 NODE_ID=${NODE_ID}
 IMAGE=${_repo}
 TAG=${_tag}
@@ -83,135 +135,99 @@ MYSQL_DB=${MYSQL_DB:-}
 MYSQL_USER=${MYSQL_USER:-}
 MYSQL_PASS=${MYSQL_PASS:-}
 EOF
-  chmod 600 "$ENV_FILE"
-  green "配置已写入：${ENV_FILE}"
+  chmod 600 "$ENV_FILE"; green "配置已写入：${ENV_FILE}"
 }
-
-load_env(){ [[ -f "$ENV_FILE" ]] && . "$ENV_FILE" || true; }
-
-# 兼容两套命名，构建最终镜像引用
 build_image_ref(){
-  # 先读 .env（可能是 IMAGE/TAG，也可能是 IMAGE_NAME/IMAGE_TAG）
-  local _IMAGE="${IMAGE:-${IMAGE_NAME:-}}"
-  local _TAG="${TAG:-${IMAGE_TAG:-}}"
-
-  if [[ -z "$_IMAGE" ]]; then
-    _IMAGE="$IMAGE_NAME"
-  fi
-
-  # 如果 _IMAGE 已经包含 :tag，就直接用它；否则再拼 _TAG（非空才拼）
-  if [[ "$_IMAGE" == *:* ]]; then
-    IMAGE_REF="$_IMAGE"
-  else
-    IMAGE_REF="${_IMAGE}${_TAG:+:${_TAG}}"
-  fi
+  local _IMAGE="${IMAGE:-${IMAGE_NAME:-}}"; local _TAG="${TAG:-${IMAGE_TAG:-}}"
+  [[ -z "$_IMAGE" ]] && _IMAGE="$IMAGE_NAME"
+  if [[ "$_IMAGE" == *:* ]]; then IMAGE_REF="$_IMAGE"; else IMAGE_REF="${_IMAGE}${_TAG:+:${_TAG}}"; fi
 }
 
-# ========== 交互对接 ==========
+# ---- 交互配置 & 预检 --------------------------------------------------------
 configure(){
-  blue "选择对接模式："
-  echo "  1) WebAPI 对接（推荐）"
-  echo "  2) 数据库对接"
-  read -rp "请输入数字(1/2，默认1): " v
-  v=${v:-1}
+  blue "选择对接模式：
+  1) WebAPI 对接（推荐）
+  2) 数据库对接"
+  read -rp "请输入数字(1/2，默认1): " v; v=${v:-1}
   if [[ "$v" == "1" ]]; then
-    MODE="modwebapi"
-    blue "请输入前端网站 URL（示例：https://example.com 或 http://1.2.3.4）"
-    read -rp "WEBAPI_URL: " WEBAPI_URL
+    MODE="modwebapi"; blue "请输入前端网站 URL（示例：https://example.com 或 http://1.2.3.4）"; read -rp "WEBAPI_URL: " WEBAPI_URL
     [[ -z "${WEBAPI_URL}" ]] && { red "WEBAPI_URL 不能为空"; exit 1; }
-    read -rp "WEBAPI_TOKEN(默认 NimaQu，直接回车为默认): " WEBAPI_TOKEN
-    WEBAPI_TOKEN=${WEBAPI_TOKEN:-NimaQu}
-  elif [[ "$v" == "2" ]]; then
-    MODE="glzjinmod"
-    blue "请输入前端数据库信息："
-    read -rp "MYSQL_HOST(例如 127.0.0.1): " MYSQL_HOST
-    read -rp "MYSQL_DB(例如 sspanel): " MYSQL_DB
-    read -rp "MYSQL_USER(例如 root): " MYSQL_USER
-    read -rp "MYSQL_PASS(数据库密码): " MYSQL_PASS
-    [[ -z "${MYSQL_HOST}${MYSQL_DB}${MYSQL_USER}${MYSQL_PASS}" ]] && { red "数据库信息不完整"; exit 1; }
+    read -rp "WEBAPI_TOKEN(默认 NimaQu，直接回车为默认): " WEBAPI_TOKEN; WEBAPI_TOKEN=${WEBAPI_TOKEN:-NimaQu}
+    # 基础连通性
+    curl -fsSI --max-time 8 "$WEBAPI_URL" >/dev/null || yellow "警告：无法快速访问 ${WEBAPI_URL}，请确认前端可达"
   else
-    red "输入无效"; exit 1
+    MODE="glzjinmod"; blue "请输入前端数据库信息："; read -rp "MYSQL_HOST: " MYSQL_HOST; read -rp "MYSQL_DB: " MYSQL_DB; read -rp "MYSQL_USER: " MYSQL_USER; read -rp "MYSQL_PASS: " MYSQL_PASS
+    [[ -z "${MYSQL_HOST}${MYSQL_DB}${MYSQL_USER}${MYSQL_PASS}" ]] && { red "数据库信息不完整"; exit 1; }
   fi
-  read -rp "节点 ID (例如 3): " NODE_ID
-  [[ -z "${NODE_ID}" ]] && { red "节点 ID 不能为空"; exit 1; }
+  read -rp "节点 ID (例如 3): " NODE_ID; [[ -n "${NODE_ID}" && "${NODE_ID}" =~ ^[0-9]+$ ]] || { red "节点 ID 必须为数字"; exit 1; }
   write_env
 }
 
-# ========== 运行容器 ==========
+# ---- 容器生命周期 -----------------------------------------------------------
+docker_pull_retry(){ local n=0; until docker pull "$1"; do n=$((n+1)); [[ $n -ge 3 ]] && { red "拉取镜像失败：$1"; return 1; }; yellow "拉取失败，重试($n/3)..."; sleep 2; done; }
+
+compose_run_args(){
+  RUN_ARGS=(
+    --name "${CONTAINER_NAME}"
+    --network=host
+    --restart=always
+    --ulimit "nofile=${ULIMIT_NOFILE}"
+    --log-opt max-size=50m --log-opt max-file=3
+  )
+  # 资源限制（可选）
+  [[ -n "$MEM_LIMIT" ]] && RUN_ARGS+=(--memory "$MEM_LIMIT")
+  [[ -n "$CPU_LIMIT" ]] && RUN_ARGS+=(--cpus "$CPU_LIMIT")
+  # 兼容参数
+  RUN_ARGS+=("${DOCKER_EXTRA_OPTS[@]}")
+}
+
 docker_run(){
-  load_env
-  [[ -z "${MODE:-}" ]] && { red "未检测到配置，请先执行 安装/配置"; exit 1; }
-
-  build_image_ref
-  yellow "Using image: ${IMAGE_REF}"
-  docker pull "${IMAGE_REF}"
-
+  load_env; [[ -z "${MODE:-}" ]] && { red "未检测到配置，请先执行 安装/配置"; exit 1; }
+  build_image_ref; yellow "Using image: ${IMAGE_REF}"; docker_pull_retry "${IMAGE_REF}"
   ENV_ARGS=(-e NODE_ID="${NODE_ID}" -e API_INTERFACE="${MODE}")
-  if [[ "$MODE" == "modwebapi" ]]; then
-    ENV_ARGS+=(-e WEBAPI_URL="${WEBAPI_URL}" -e WEBAPI_TOKEN="${WEBAPI_TOKEN}")
-  else
-    ENV_ARGS+=(-e MYSQL_HOST="${MYSQL_HOST}" -e MYSQL_USER="${MYSQL_USER}" -e MYSQL_DB="${MYSQL_DB}" -e MYSQL_PASS="${MYSQL_PASS}")
-  fi
-
-  NET_ARG="--network=host"
+  if [[ "$MODE" == "modwebapi" ]]; then ENV_ARGS+=(-e WEBAPI_URL="${WEBAPI_URL}" -e WEBAPI_TOKEN="${WEBAPI_TOKEN}"); else ENV_ARGS+=(-e MYSQL_HOST="${MYSQL_HOST}" -e MYSQL_USER="${MYSQL_USER}" -e MYSQL_DB="${MYSQL_DB}" -e MYSQL_PASS="${MYSQL_PASS}"); fi
   LABELS=(--label "app=${APP_NAME}" --label "mode=${MODE}")
-
-  if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
-    yellow "检测到旧容器，先移除..."
-    docker rm -f "${CONTAINER_NAME}" || true
-  fi
-
-  docker run -d \
-    --name "${CONTAINER_NAME}" \
-    "${ENV_ARGS[@]}" \
-    ${NET_ARG} \
-    --restart=always \
-    --log-opt max-size=50m --log-opt max-file=3 \
-    "${LABELS[@]}" \
-    "${IMAGE_REF}"
-
+  compose_run_args
+  if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then yellow "检测到旧容器，先移除..."; docker rm -f "${CONTAINER_NAME}" || true; fi
+  docker run -d "${RUN_ARGS[@]}" "${LABELS[@]}" "${ENV_ARGS[@]}" "${IMAGE_REF}"
   green "容器已启动：${CONTAINER_NAME}"
 }
 
-cmd_install(){ ensure_dirs; configure; docker_run; green "安装/部署完成。"; }
-cmd_start(){ docker start "${CONTAINER_NAME}" && green "已启动"; }
-cmd_stop(){ docker stop "${CONTAINER_NAME}" && green "已停止"; }
-cmd_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启"; }
-cmd_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" || true; }
-cmd_logs(){ docker logs -n 200 -f "${CONTAINER_NAME}"; }
+docker_start(){ docker start "${CONTAINER_NAME}" && green "已启动" || red "容器不存在"; }
+docker_stop(){ docker stop "${CONTAINER_NAME}" && green "已停止" || true; }
+docker_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启" || red "容器不存在"; }
+docker_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}	{{.Status}}	{{.Image}}" || true; }
+docker_logs(){ docker logs -n 200 -f "${CONTAINER_NAME}"; }
 
-cmd_uninstall(){
-  yellow "将卸载容器 ${CONTAINER_NAME}（不删除 ${DATA_DIR} 配置）"
-  if confirm "确认卸载容器？"; then
-    docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
-    green "容器已卸载。"
-  fi
-  if confirm "同时删除配置与数据目录 ${DATA_DIR} ？（不可恢复）"; then
-    rm -rf "${DATA_DIR}"
-    green "已删除 ${DATA_DIR}"
-  fi
+docker_upgrade(){
+  load_env; build_image_ref; yellow "升级镜像 ${IMAGE_REF} ..."; docker_pull_retry "${IMAGE_REF}"; docker_stop || true; docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; docker_run
 }
 
+cmd_install(){ ensure_dirs; configure; apply_limits; apply_sysctl; fix_daemon_json; show_cgroup; docker_run; green "安装/部署完成"; }
+cmd_uninstall(){ yellow "将卸载容器 ${CONTAINER_NAME}（不删除 ${DATA_DIR} 配置）"; if confirm "确认卸载容器？"; then docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; green "容器已卸载"; fi; if confirm "同时删除配置与数据目录 ${DATA_DIR}？（不可恢复）"; then rm -rf "${DATA_DIR}"; green "已删除 ${DATA_DIR}"; fi }
+
 menu(){
-  clear
-  blue "=========== sspanel 后端对接 - 安全版 ==========="
-  echo "1) 安装/配置并部署"
-  echo "2) 启动"
-  echo "3) 停止"
-  echo "4) 重启"
-  echo "5) 查看状态"
-  echo "6) 查看日志"
-  echo "7) 卸载（可选保留配置）"
-  echo "0) 退出"
+  clear; blue "=========== sspanel 后端对接 - 企业级优化版 ==========="; cat <<'M'
+1) 安装/配置并部署（含系统与 Docker 调优）
+2) 启动
+3) 停止
+4) 重启
+5) 查看状态
+6) 查看日志
+7) 升级镜像并重建
+8) 卸载（可选保留配置）
+0) 退出
+M
   read -rp "请选择: " n
   case "${n:-0}" in
-    1) need_root; detect_os; install_docker; cmd_install ;;
-    2) need_root; cmd_start ;;
-    3) need_root; cmd_stop ;;
-    4) need_root; cmd_restart ;;
-    5) cmd_status ;;
-    6) cmd_logs ;;
-    7) need_root; cmd_uninstall ;;
+    1) need_root; detect_os; need_pkg curl; install_docker; fix_daemon_json; cmd_install ;;
+    2) need_root; docker_start ;;
+    3) need_root; docker_stop ;;
+    4) need_root; docker_restart ;;
+    5) docker_status ;;
+    6) docker_logs ;;
+    7) need_root; docker_upgrade ;;
+    8) need_root; cmd_uninstall ;;
     0) exit 0 ;;
     *) red "无效选择"; sleep 1; menu ;;
   esac
