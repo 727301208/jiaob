@@ -253,6 +253,34 @@ docker_restart(){ docker restart "${CONTAINER_NAME}" && green "已重启" || red
 docker_status(){ docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}	{{.Status}}	{{.Image}}" || true; }
 docker_logs(){ docker logs -n 200 -f "${CONTAINER_NAME}"; }
 
+# ---- 一键快速对接（读取现有 /opt/sspanel-backend/.env，直接部署） ---------
+cmd_quick(){
+  ensure_dirs; need_pkg curl; install_docker; fix_daemon_json
+  [[ -s "${ENV_FILE}" ]] || { red "未找到 ${ENV_FILE}，请先执行安装/配置或手动写入 .env"; exit 1; }
+  # 只加载 .env，不打印私参
+  set -a; . "${ENV_FILE}"; set +a
+  # 安全镜像名
+  build_image_ref; yellow "Using image: ${IMAGE_REF}"
+  # 拉镜像 + 重建
+  docker_pull_retry "${IMAGE_REF}"
+  docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+  # 运行参数
+  ENV_ARGS=(-e NODE_ID="${NODE_ID}" -e API_INTERFACE="${MODE:-modwebapi}")
+  if [[ "${MODE:-modwebapi}" == "modwebapi" ]]; then
+    ENV_ARGS+=( -e WEBAPI_URL="${WEBAPI_URL}" -e WEBAPI_TOKEN="${WEBAPI_TOKEN}" )
+  else
+    ENV_ARGS+=( -e MYSQL_HOST="${MYSQL_HOST}" -e MYSQL_USER="${MYSQL_USER}" -e MYSQL_DB="${MYSQL_DB}" -e MYSQL_PASS="${MYSQL_PASS}" )
+  fi
+  LABELS=(--label "app=${APP_NAME}" --label "mode=${MODE:-modwebapi}")
+  compose_run_args
+  docker run -d "${RUN_ARGS[@]}" "${LABELS[@]}" "${ENV_ARGS[@]}" "${IMAGE_REF}"
+  green "容器已启动：${CONTAINER_NAME}"
+  container_post_patch || true
+  docker_status
+  echo "------ last 120 log lines ------"
+  docker logs --tail=120 "${CONTAINER_NAME}"
+}
+
 docker_upgrade(){ load_env; build_image_ref; yellow "升级镜像 ${IMAGE_REF} ..."; docker_pull_retry "${IMAGE_REF}"; docker_stop || true; docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true; docker_run }
 
 cmd_install(){ ensure_dirs; apply_limits; apply_sysctl; fix_daemon_json; show_cgroup; if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then preconfigure; else configure; fi; docker_run; green "安装/部署完成"; }
@@ -268,6 +296,7 @@ menu(){
 6) 查看日志
 7) 升级镜像并重建
 8) 卸载（可选保留配置）
+9) 快速对接（读取现有 .env 直接部署）
 0) 退出
 M
   read -rp "请选择: " n
@@ -280,6 +309,7 @@ M
     6) docker_logs ;;
     7) need_root; docker_upgrade ;;
     8) need_root; cmd_uninstall ;;
+    9) need_root; cmd_quick ;;
     0) exit 0 ;;
     *) red "无效选择"; sleep 1; menu ;;
   esac
