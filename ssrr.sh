@@ -6,6 +6,7 @@
 #  - 预检与回滚：Docker/内核/cgroup 检测，daemon.json 安全修复
 #  - 高并发优化：ulimit/limits、sysctl（含可选 BBR）、日志轮转、重试拉取
 #  - 运行稳健：统一 IMAGE_REF、可选兼容参数（seccomp/cgroupns）
+#  - 自动“消音”：容器启动后自动补齐 IP 列表 CIDR（/32、/128）
 #  - 运维友好：install/start/stop/restart/status/logs/upgrade/uninstall/tune
 # 适用：CentOS7 / Debian / Ubuntu
 # ============================================================================
@@ -143,6 +144,47 @@ build_image_ref(){
   if [[ "$_IMAGE" == *:* ]]; then IMAGE_REF="$_IMAGE"; else IMAGE_REF="${_IMAGE}${_TAG:+:${_TAG}}"; fi
 }
 
+# ---- 自动“消音”：容器内补齐 CIDR 前缀 --------------------------------------
+container_post_patch(){
+  yellow "执行容器内 CIDR 补齐（/32,/128）..."
+  docker exec -i "${CONTAINER_NAME}" sh -lc '
+set -e
+f=$(grep -R -l "\"forbidden_ip\"" /root /usr /etc /opt /app 2>/dev/null | head -n1 || true)
+[ -z "$f" ] && f=$(find / -maxdepth 3 -type f -name "user-config.json" 2>/dev/null | head -n1 || true)
+[ -z "$f" ] && { echo "未找到配置文件，跳过补齐"; exit 0; }
+python3 - <<PY "$f"
+import json, sys
+p=sys.argv[1]
+with open(p, 'r', encoding='utf-8') as fh:
+    d=json.load(fh)
+chg=False
+keys=["forbidden_ip","forbidden_ip6","white_list","block_list","allow_list"]
+def fix(lst):
+    global chg
+    if not isinstance(lst, list): return lst
+    out=[]
+    for x in lst:
+        if isinstance(x, str):
+            s=x.strip()
+            if s and '/' not in s:
+                s += '/128' if ':' in s else '/32'
+                chg=True
+            out.append(s)
+        else:
+            out.append(x)
+    return out
+for k in keys:
+    if k in d: d[k]=fix(d[k])
+if chg:
+    with open(p,'w',encoding='utf-8') as fh:
+        json.dump(d, fh, ensure_ascii=False, indent=2)
+    print('patched:', p)
+else:
+    print('no change:', p)
+PY
+' || true
+}
+
 # ---- 交互配置 & 预检 --------------------------------------------------------
 configure(){
   blue "选择对接模式：
@@ -191,6 +233,7 @@ docker_run(){
   if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then yellow "检测到旧容器，先移除..."; docker rm -f "${CONTAINER_NAME}" || true; fi
   docker run -d "${RUN_ARGS[@]}" "${LABELS[@]}" "${ENV_ARGS[@]}" "${IMAGE_REF}"
   green "容器已启动：${CONTAINER_NAME}"
+  container_post_patch || true
 }
 
 docker_start(){ docker start "${CONTAINER_NAME}" && green "已启动" || red "容器不存在"; }
@@ -208,7 +251,7 @@ cmd_uninstall(){ yellow "将卸载容器 ${CONTAINER_NAME}（不删除 ${DATA_DI
 
 menu(){
   clear; blue "=========== sspanel 后端对接 - 企业级优化版 ==========="; cat <<'M'
-1) 安装/配置并部署（含系统与 Docker 调优）
+1) 安装/配置并部署（含系统与 Docker 调优 + 自动消音）
 2) 启动
 3) 停止
 4) 重启
